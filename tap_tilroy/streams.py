@@ -6,14 +6,48 @@ from tap_tilroy.client import TilroyStream
 import requests
 from datetime import datetime, timedelta
 
-class ShopsStream(TilroyStream):
-    """Stream for Tilroy shops."""
-    name = "shops"
-    path = "/shopapi/production/shops"
-    primary_keys: t.ClassVar[list[str]] = ["tilroyId"]
-    replication_key = None
-    records_jsonpath = "$[*]"
-    next_page_token_jsonpath = None
+class DateFilteredStream(TilroyStream):
+    """Base class for streams that use date-based filtering."""
+    
+    def get_url_params(
+        self,
+        context: t.Optional[dict],
+        next_page_token: t.Optional[t.Any] = None,
+    ) -> dict[str, t.Any]:
+        """Get URL query parameters.
+
+        Args:
+            context: Stream partition or context dictionary.
+            next_page_token: Token for the next page of results.
+
+        Returns:
+            Dictionary of URL query parameters.
+        """
+        params = {}
+        
+        # Get the start date from the bookmark or use config
+        start_date = self.get_starting_timestamp(context)
+        if not start_date:
+            # Get start date from config
+            config_start_date = self.config["start_date"]
+            start_date = datetime.strptime(config_start_date, "%Y-%m-%d")
+        else:
+            # If we have a bookmark, go back 1 day to ensure we don't miss any records
+            start_date = start_date - timedelta(days=1)
+        
+        # Format the date as YYYY-MM-DD and ensure it's a string
+        params["dateFrom"] = start_date.strftime("%Y-%m-%d")
+        
+        # Set page parameter for pagination
+        if next_page_token:
+            params["page"] = next_page_token
+        else:
+            params["page"] = 1
+            
+        # Set count parameter
+        params["count"] = self.default_count
+        
+        return params
 
     def post_process(self, row: dict, context: t.Optional[dict] = None) -> dict:
         """Post process the record to flatten nested properties.
@@ -25,33 +59,50 @@ class ShopsStream(TilroyStream):
         Returns:
             Processed record with flattened properties.
         """
-        # Flatten type
-        if "type" in row:
-            type_obj = row["type"]
-            row["type_tilroyId"] = type_obj.get("tilroyId")
-            row["type_code"] = type_obj.get("code")
-            del row["type"]
+        # Check if this is an error response
+        if "code" in row and "message" in row:
+            self.logger.warning(f"Received error response: {row['message']}")
+            return None
+        return row
 
-        # Flatten subType
-        if "subType" in row:
-            sub_type = row["subType"]
-            row["subType_tilroyId"] = sub_type.get("tilroyId")
-            row["subType_code"] = sub_type.get("code")
-            del row["subType"]
+    def flatten_nested_object(self, row: dict, field_name: str, prefix: str = "") -> dict:
+        """Flatten a nested object in the record.
 
-        # Flatten language
-        if "language" in row:
-            lang = row["language"]
-            row["language_tilroyId"] = lang.get("tilroyId")
-            row["language_code"] = lang.get("code")
-            del row["language"]
+        Args:
+            row: Record to process.
+            field_name: Name of the field to flatten.
+            prefix: Prefix to use for flattened fields.
 
-        # Flatten country
-        if "country" in row:
-            country = row["country"]
-            row["country_tilroyId"] = country.get("tilroyId")
-            row["country_countryCode"] = country.get("countryCode")
-            del row["country"]
+        Returns:
+            Updated record with flattened fields.
+        """
+        if field_name in row:
+            obj = row[field_name]
+            for key, value in obj.items():
+                row[f"{prefix}{key}"] = value
+            del row[field_name]
+        return row
+
+class ShopsStream(DateFilteredStream):
+    """Stream for Tilroy shops."""
+    name = "shops"
+    path = "/shopapi/production/shops"
+    primary_keys: t.ClassVar[list[str]] = ["tilroyId"]
+    replication_key = None
+    records_jsonpath = "$[*]"
+    next_page_token_jsonpath = None
+
+    def post_process(self, row: dict, context: t.Optional[dict] = None) -> dict:
+        """Post process the record to flatten nested properties."""
+        row = super().post_process(row, context)
+        if not row:
+            return None
+
+        # Flatten nested objects
+        row = self.flatten_nested_object(row, "type", "type_")
+        row = self.flatten_nested_object(row, "subType", "subType_")
+        row = self.flatten_nested_object(row, "language", "language_")
+        row = self.flatten_nested_object(row, "country", "country_")
 
         return row
 
@@ -76,7 +127,7 @@ class ShopsStream(TilroyStream):
         th.Property("country_countryCode", th.StringType),
     ).to_dict()
 
-class ProductsStream(TilroyStream):
+class ProductsStream(DateFilteredStream):
     """Stream for Tilroy products."""
     name = "products"
     path = "/product-bulk/production/products"
@@ -87,22 +138,16 @@ class ProductsStream(TilroyStream):
     default_count = 1000  # Override default count to 1000 for products
 
     def post_process(self, row: dict, context: t.Optional[dict] = None) -> dict:
-        """Post process the record to flatten nested properties.
+        """Post process the record to flatten nested properties."""
+        row = super().post_process(row, context)
+        if not row:
+            return None
 
-        Args:
-            row: Record to process.
-            context: Stream partition or context dictionary.
-
-        Returns:
-            Processed record with flattened properties.
-        """
         # Flatten brand
-        if "brand" in row:
-            brand = row["brand"]
-            row["brand_code"] = brand.get("code")
-            # Keep brand descriptions as array since it's a one-to-many relationship
-            row["brand_descriptions"] = brand.get("descriptions", [])
-            del row["brand"]
+        row = self.flatten_nested_object(row, "brand", "brand_")
+        # Keep brand descriptions as array since it's a one-to-many relationship
+        if "brand_descriptions" not in row and "brand" in row:
+            row["brand_descriptions"] = row["brand"].get("descriptions", [])
 
         return row
 
@@ -182,7 +227,7 @@ class ProductsStream(TilroyStream):
         th.Property("isUsed", th.BooleanType),
     ).to_dict()
 
-class PurchaseOrdersStream(TilroyStream):
+class PurchaseOrdersStream(DateFilteredStream):
     """Stream for Tilroy purchase orders."""
     name = "purchase_orders"
     path = "/purchaseapi/production/purchaseorders"
@@ -193,54 +238,30 @@ class PurchaseOrdersStream(TilroyStream):
     default_count = 100  # Default count per page
 
     def post_process(self, row: dict, context: t.Optional[dict] = None) -> dict:
-        """Post process the record to flatten nested properties.
+        """Post process the record to flatten nested properties."""
+        row = super().post_process(row, context)
+        if not row:
+            return None
 
-        Args:
-            row: Record to process.
-            context: Stream partition or context dictionary.
+        # Flatten nested objects
+        row = self.flatten_nested_object(row, "supplier", "supplier_")
+        row = self.flatten_nested_object(row, "warehouse", "warehouse_")
+        row = self.flatten_nested_object(row, "currency", "currency_")
 
-        Returns:
-            Processed record with flattened properties.
-        """
-        # Flatten supplier
-        if "supplier" in row:
-            supplier = row["supplier"]
-            row["supplier_tilroyId"] = supplier.get("tilroyId")
-            row["supplier_code"] = supplier.get("code")
-            row["supplier_name"] = supplier.get("name")
-            del row["supplier"]
-
-        # Flatten warehouse
-        if "warehouse" in row:
-            warehouse = row["warehouse"]
-            row["warehouse_number"] = warehouse.get("number")
-            row["warehouse_name"] = warehouse.get("name")
-            del row["warehouse"]
-
-        # Flatten currency
-        if "currency" in row:
-            currency = row["currency"]
-            row["currency_code"] = currency.get("code")
-            del row["currency"]
-
-        # Flatten prices
+        # Handle prices object
         if "prices" in row:
             prices = row["prices"]
             if "tenantCurrency" in prices:
                 tenant = prices["tenantCurrency"]
-                row["prices_tenantCurrency_standardVatExc"] = tenant.get("standardVatExc")
-                row["prices_tenantCurrency_standardVatInc"] = tenant.get("standardVatInc")
-                row["prices_tenantCurrency_vatExc"] = tenant.get("vatExc")
-                row["prices_tenantCurrency_vatInc"] = tenant.get("vatInc")
+                for key, value in tenant.items():
+                    row[f"prices_tenantCurrency_{key}"] = value
             if "supplierCurrency" in prices:
                 supplier = prices["supplierCurrency"]
-                row["prices_supplierCurrency_standardVatExc"] = supplier.get("standardVatExc")
-                row["prices_supplierCurrency_standardVatInc"] = supplier.get("standardVatInc")
-                row["prices_supplierCurrency_vatExc"] = supplier.get("vatExc")
-                row["prices_supplierCurrency_vatInc"] = supplier.get("vatInc")
+                for key, value in supplier.items():
+                    row[f"prices_supplierCurrency_{key}"] = value
             del row["prices"]
 
-        # Flatten created user
+        # Handle created and modified timestamps
         if "created" in row and "user" in row["created"]:
             created_user = row["created"]["user"]
             row["created_user_login"] = created_user.get("login")
@@ -248,7 +269,6 @@ class PurchaseOrdersStream(TilroyStream):
             row["created_timestamp"] = row["created"].get("timestamp")
             del row["created"]
 
-        # Flatten modified user
         if "modified" in row and "user" in row["modified"]:
             modified_user = row["modified"]["user"]
             row["modified_user_login"] = modified_user.get("login")
@@ -324,66 +344,35 @@ class PurchaseOrdersStream(TilroyStream):
         ))),
     ).to_dict()
 
-class StockChangesStream(TilroyStream):
+class StockChangesStream(DateFilteredStream):
     """Stream for Tilroy stock changes."""
     name = "stock_changes"
     path = "/stockapi/production/export/stockdeltas"
     primary_keys: t.ClassVar[list[str]] = ["tilroyId"]
-    replication_key = "timestamp"
+    replication_key = "saleDate"
     records_jsonpath = "$[*]"
     next_page_token_jsonpath = None
+    default_count = 500  # Match SalesStream's default count
 
     def post_process(self, row: dict, context: t.Optional[dict] = None) -> dict:
-        """Post process the record to flatten nested properties.
+        """Post process the record to flatten nested properties."""
+        row = super().post_process(row, context)
+        if not row:
+            return None
 
-        Args:
-            row: Record to process.
-            context: Stream partition or context dictionary.
-
-        Returns:
-            Processed record with flattened properties.
-        """
-        # Flatten shop
-        if "shop" in row:
-            shop = row["shop"]
-            row["shop_number"] = shop.get("number")
-            row["shop_sourceId"] = shop.get("sourceId")
-            del row["shop"]
-
-        # Flatten product
-        if "product" in row:
-            product = row["product"]
-            row["product_code"] = product.get("code")
-            row["product_sourceId"] = product.get("sourceId")
-            del row["product"]
-
-        # Flatten colour
-        if "colour" in row:
-            colour = row["colour"]
-            row["colour_code"] = colour.get("code")
-            row["colour_sourceId"] = colour.get("sourceId")
-            del row["colour"]
-
-        # Flatten size
-        if "size" in row:
-            size = row["size"]
-            row["size_code"] = size.get("code")
-            del row["size"]
-
-        # Flatten sku
-        if "sku" in row:
-            sku = row["sku"]
-            row["sku_barcode"] = sku.get("barcode")
-            row["sku_sourceId"] = sku.get("sourceId")
-            del row["sku"]
+        # Flatten nested objects
+        row = self.flatten_nested_object(row, "shop", "shop_")
+        row = self.flatten_nested_object(row, "product", "product_")
+        row = self.flatten_nested_object(row, "colour", "colour_")
+        row = self.flatten_nested_object(row, "size", "size_")
+        row = self.flatten_nested_object(row, "sku", "sku_")
 
         return row
 
     schema = th.PropertiesList(
         th.Property("tilroyId", th.StringType),
-        th.Property("timestamp", th.StringType),
+        th.Property("saleDate", th.DateTimeType),
         th.Property("sourceId", th.StringType),
-        th.Property("modificationType", th.StringType),
         th.Property("reason", th.StringType),
         th.Property("shop_number", th.IntegerType),
         th.Property("shop_sourceId", th.StringType, required=False),
@@ -401,7 +390,7 @@ class StockChangesStream(TilroyStream):
         th.Property("cause", th.StringType, required=False),
     ).to_dict()
 
-class SalesStream(TilroyStream):
+class SalesStream(DateFilteredStream):
     """Stream for Tilroy sales."""
     name = "sales"
     path = "/saleapi/production/export/sales"
@@ -411,108 +400,24 @@ class SalesStream(TilroyStream):
     next_page_token_jsonpath = None
     default_count = 500  # Default count per page
 
-    def get_url_params(
-        self,
-        context: t.Optional[dict],
-        next_page_token: t.Optional[t.Any] = None,
-    ) -> dict[str, t.Any]:
-        """Get URL query parameters.
-
-        Args:
-            context: Stream partition or context dictionary.
-            next_page_token: Token for the next page of results.
-
-        Returns:
-            Dictionary of URL query parameters.
-        """
-        params = {}
-        
-        # Get the start date from the bookmark or use config
-        start_date = self.get_starting_timestamp(context)
-        if not start_date:
-            # Get start date from config
-            config_start_date = self.config["start_date"]
-            start_date = datetime.strptime(config_start_date, "%Y-%m-%d")
-        else:
-            # If we have a bookmark, go back 1 day to ensure we don't miss any records
-            start_date = start_date - timedelta(days=1)
-        
-        # Format the date as YYYY-MM-DD and ensure it's a string
-        params["dateFrom"] = start_date.strftime("%Y-%m-%d")
-        
-        # Set page parameter for pagination
-        if next_page_token:
-            params["page"] = next_page_token
-        else:
-            params["page"] = 1
-            
-        # Set count parameter
-        params["count"] = self.default_count
-        
-        return params
-
     def post_process(self, row: dict, context: t.Optional[dict] = None) -> dict:
-        """Post process the record to flatten nested properties.
+        """Post process the record to flatten nested properties."""
+        row = super().post_process(row, context)
+        if not row:
+            return None
 
-        Args:
-            row: Record to process.
-            context: Stream partition or context dictionary.
+        # Flatten nested objects
+        row = self.flatten_nested_object(row, "customer", "customer_")
+        row = self.flatten_nested_object(row, "shop", "shop_")
+        row = self.flatten_nested_object(row, "till", "till_")
+        row = self.flatten_nested_object(row, "legalEntity", "legalEntity_")
 
-        Returns:
-            Processed record with flattened properties.
-        """
-        # Flatten customer
-        if "customer" in row:
-            row["customer_idTilroy"] = row["customer"].get("idTilroy")
-            row["customer_idSource"] = row["customer"].get("idSource")
-            del row["customer"]
-
-        # Flatten vatTypeCalculation
+        # Handle vatTypeCalculation
         if "vatTypeCalculation" in row:
             vat_calc = row["vatTypeCalculation"]
-            row["vatTypeCalculation_UseCalculation"] = vat_calc.get("UseCalculation")
-            row["vatTypeCalculation_IdVatType"] = vat_calc.get("IdVatType")
-            row["vatTypeCalculation_VatTypeCode"] = vat_calc.get("VatTypeCode")
-            row["vatTypeCalculation_VatExempt"] = vat_calc.get("VatExempt")
-            row["vatTypeCalculation_IsVatIncl"] = vat_calc.get("IsVatIncl")
-            row["vatTypeCalculation_IsIntraComm"] = vat_calc.get("IsIntraComm")
-            row["vatTypeCalculation_IsExport"] = vat_calc.get("IsExport")
-            row["vatTypeCalculation_IsCustom"] = vat_calc.get("IsCustom")
-            row["vatTypeCalculation_IdCountryFrom"] = vat_calc.get("IdCountryFrom")
-            row["vatTypeCalculation_CountryFromIsIntrastat"] = vat_calc.get("CountryFromIsIntrastat")
-            row["vatTypeCalculation_IdCountryTo"] = vat_calc.get("IdCountryTo")
-            row["vatTypeCalculation_CountryToIsIntrastat"] = vat_calc.get("CountryToIsIntrastat")
-            row["vatTypeCalculation_Invoice"] = vat_calc.get("Invoice")
-            row["vatTypeCalculation_VatNumber"] = vat_calc.get("VatNumber")
-            row["vatTypeCalculation_IdCustomer"] = vat_calc.get("IdCustomer")
+            for key, value in vat_calc.items():
+                row[f"vatTypeCalculation_{key}"] = value
             del row["vatTypeCalculation"]
-
-        # Flatten shop
-        if "shop" in row:
-            shop = row["shop"]
-            row["shop_idTilroy"] = shop.get("idTilroy")
-            row["shop_idSource"] = shop.get("idSource")
-            row["shop_number"] = shop.get("number")
-            row["shop_name"] = shop.get("name")
-            row["shop_country"] = shop.get("country")
-            del row["shop"]
-
-        # Flatten till
-        if "till" in row:
-            till = row["till"]
-            row["till_idTilroy"] = till.get("idTilroy")
-            row["till_number"] = till.get("number")
-            row["till_idSource"] = till.get("idSource")
-            del row["till"]
-
-        # Flatten legalEntity
-        if "legalEntity" in row:
-            legal = row["legalEntity"]
-            row["legalEntity_idTilroy"] = legal.get("idTilroy")
-            row["legalEntity_code"] = legal.get("code")
-            row["legalEntity_name"] = legal.get("name")
-            row["legalEntity_vatNr"] = legal.get("vatNr")
-            del row["legalEntity"]
 
         return row
 
