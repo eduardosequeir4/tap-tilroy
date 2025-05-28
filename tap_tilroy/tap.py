@@ -15,6 +15,13 @@ from tap_tilroy.streams import (
 # TODO: Import your custom stream types here:
 from tap_tilroy import streams
 
+STREAM_TYPES = [
+    ProductsStream,
+    ShopsStream,
+    PurchaseOrdersStream,
+    StockChangesStream,
+    SalesStream,
+]
 
 class TapTilroy(Tap):
     """Tilroy tap class."""
@@ -52,11 +59,11 @@ class TapTilroy(Tap):
             A list of discovered streams.
         """
         return [
-            ShopsStream(self),
+            #ShopsStream(self),
             ProductsStream(self),
-            PurchaseOrdersStream(self),
-            StockChangesStream(self),
-            SalesStream(self),
+            #PurchaseOrdersStream(self),
+            #StockChangesStream(self),
+            #SalesStream(self),
         ]
 
 
