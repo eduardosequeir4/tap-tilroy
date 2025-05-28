@@ -426,12 +426,18 @@ class SalesStream(TilroyStream):
         """
         params = super().get_url_params(context, next_page_token)
         
-        # Get current date and yesterday's date
-        today = datetime.now()
-        yesterday = today - timedelta(days=1)
+        # Get the start date from the bookmark or use config
+        start_date = self.get_starting_time(context)
+        if not start_date:
+            # Get start date from config
+            config_start_date = self.config["start_date"]
+            start_date = datetime.strptime(config_start_date, "%Y-%m-%d")
+        else:
+            # If we have a bookmark, go back 1 day to ensure we don't miss any records
+            start_date = start_date - timedelta(days=1)
         
-        # Format dates as YYYY-MM-DD
-        params["dateFrom"] = yesterday.strftime("%Y-%m-%d")
+        # Format the date as YYYY-MM-DD
+        params["dateFrom"] = start_date.strftime("%Y-%m-%d")
         
         return params
 
