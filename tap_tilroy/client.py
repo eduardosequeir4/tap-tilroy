@@ -17,6 +17,7 @@ from singer_sdk.authenticators import APIKeyAuthenticator
 
 from tap_tilroy.auth import TilroyAuthenticator
 import requests
+import json
 
 if t.TYPE_CHECKING:
     from singer_sdk.helpers.types import Auth, Context
@@ -102,23 +103,35 @@ class TilroyStream(RESTStream):
         while True:
             url = f"{self.url_base}{self.path}?count={self.default_count}&page={page}"
             headers = self.get_headers(context)
-            print(f"[{self.name}] REQUEST: GET {url}")
-            print(f"[{self.name}] HEADERS: {headers}")
-            response = requests.get(url, headers=headers)
-            print(f"[{self.name}] RESPONSE STATUS: {response.status_code}")
-            print(f"[{self.name}] RESPONSE BODY: {response.text}")
-            response.raise_for_status()
             
-            records = response.json()
-            if not records:  # If no records returned, we've reached the end
-                break
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
                 
-            for record in records:
-                print(f"[{self.name}] Record:", record)
-                yield record
+                # Parse the response
+                data = response.json()
                 
-            # If we got exactly default_count records, there might be more pages
-            if len(records) < self.default_count:
-                break
+                # Extract records using jsonpath
+                records = list(extract_jsonpath(self.records_jsonpath, data))
                 
-            page += 1  # Move to next page
+                if not records:  # If no records returned, we've reached the end
+                    break
+                    
+                for record in records:
+                    yield record
+                    
+                # If we got exactly default_count records, there might be more pages
+                if len(records) < self.default_count:
+                    break
+                    
+                page += 1  # Move to next page
+                
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"Error fetching records: {str(e)}")
+                if hasattr(e.response, 'text'):
+                    self.logger.error(f"Response text: {e.response.text}")
+                raise
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error parsing JSON response: {str(e)}")
+                self.logger.error(f"Response text: {response.text}")
+                raise
