@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from singer_sdk import Tap
 from singer_sdk import typing as th  # JSON schema typing helpers
-from tap_tilroy.streams import ShopsStream, ProductsStream, PurchaseOrdersStream
+from tap_tilroy.streams import (
+    ShopsStream,
+    ProductsStream,
+    PurchaseOrdersStream,
+    StockChangesStream,
+    SalesStream,
+)
 
 # TODO: Import your custom stream types here:
 from tap_tilroy import streams
@@ -45,7 +51,13 @@ class TapTilroy(Tap):
         Returns:
             A list of discovered streams.
         """
-        return [ShopsStream(self), ProductsStream(self), PurchaseOrdersStream(self)]
+        return [
+            ShopsStream(self),
+            ProductsStream(self),
+            PurchaseOrdersStream(self),
+            StockChangesStream(self),
+            SalesStream(self),
+        ]
 
 
 if __name__ == "__main__":
