@@ -425,10 +425,10 @@ class SalesStream(TilroyStream):
         Returns:
             Dictionary of URL query parameters.
         """
-        params = super().get_url_params(context, next_page_token)
+        params = {}
         
         # Get the start date from the bookmark or use config
-        start_date = self.get_starting_time(context)
+        start_date = self.get_starting_timestamp(context)
         if not start_date:
             # Get start date from config
             config_start_date = self.config["start_date"]
@@ -445,6 +445,9 @@ class SalesStream(TilroyStream):
             params["page"] = next_page_token
         else:
             params["page"] = 1
+            
+        # Set count parameter
+        params["count"] = self.default_count
         
         return params
 
@@ -548,7 +551,7 @@ class SalesStream(TilroyStream):
         th.Property("till_number", th.IntegerType),
         th.Property("till_idSource", th.StringType, required=False),
         # Main sale fields
-        th.Property("saleDate", th.StringType),
+        th.Property("saleDate", th.DateTimeType),
         th.Property("eTicket", th.BooleanType),
         th.Property("orderDate", th.StringType, required=False),
         th.Property("totalAmountStandard", th.NumberType),
