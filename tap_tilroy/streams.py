@@ -409,6 +409,7 @@ class SalesStream(TilroyStream):
     replication_key = "saleDate"
     records_jsonpath = "$[*]"
     next_page_token_jsonpath = None
+    default_count = 500  # Default count per page
 
     def get_url_params(
         self,
@@ -439,8 +440,11 @@ class SalesStream(TilroyStream):
         # Format the date as YYYY-MM-DD and ensure it's a string
         params["dateFrom"] = start_date.strftime("%Y-%m-%d")
         
-        # Add dateTo parameter to ensure we get all records up to now
-        params["dateTo"] = datetime.now().strftime("%Y-%m-%d")
+        # Set page parameter for pagination
+        if next_page_token:
+            params["page"] = next_page_token
+        else:
+            params["page"] = 1
         
         return params
 
