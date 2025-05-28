@@ -436,8 +436,11 @@ class SalesStream(TilroyStream):
             # If we have a bookmark, go back 1 day to ensure we don't miss any records
             start_date = start_date - timedelta(days=1)
         
-        # Format the date as YYYY-MM-DD
+        # Format the date as YYYY-MM-DD and ensure it's a string
         params["dateFrom"] = start_date.strftime("%Y-%m-%d")
+        
+        # Add dateTo parameter to ensure we get all records up to now
+        params["dateTo"] = datetime.now().strftime("%Y-%m-%d")
         
         return params
 
